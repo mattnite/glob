@@ -8,17 +8,121 @@ const open_flags = .{
 
 pub const Iterator = struct {
     allocator: *mem.Allocator,
-    pattern: std.ArrayList([]const u8),
-    segments: std.ArrayList([]const u8),
+    root: std.fs.Dir,
+    segments: std.ArrayListUnmanaged([]const u8),
+    stack: std.ArrayListUnmanaged(std.fs.Dir.Iterator),
+    components: std.ArrayListUnmanaged([]const u8),
+    path: ?[]const u8,
+    done: bool,
 
     pub fn init(allocator: *mem.Allocator, root: std.fs.Dir, pattern: []const u8) !Iterator {
-        return error.Todo;
+        if (pattern.len > 0 and pattern[0] == '/') return error.NoAbsolutePatterns;
+
+        var ret = Iterator{
+            .allocator = allocator,
+            .root = root,
+            .segments = std.ArrayListUnmanaged([]const u8){},
+            .stack = std.ArrayListUnmanaged(std.fs.Dir.Iterator){},
+            .components = std.ArrayListUnmanaged([]const u8){},
+            .path = null,
+            .done = false,
+        };
+        errdefer ret.deinit();
+
+        var it = mem.split(pattern, "/");
+        while (it.next()) |seg| {
+            if (mem.indexOf(u8, seg, "**") != null)
+                return error.NotSupported;
+
+            try ret.segments.append(allocator, seg);
+        }
+
+        return ret;
     }
 
-    pub fn deinit(self: *Iterator) void {}
+    pub fn deinit(self: *Iterator) void {
+        self.segments.deinit(self.allocator);
+        self.components.deinit(self.allocator);
+        if (self.stack.items.len > 0) {
+            for (self.stack.items[1..]) |*it| {
+                it.dir.close();
+            }
+        }
 
-    pub fn next() !?[]const u8 {
-        return error.Todo;
+        self.stack.deinit(self.allocator);
+        if (self.path) |path| self.allocator.free(path);
+    }
+
+    pub fn match(pattern: []const u8, str: []const u8) bool {
+        if (mem.eql(u8, pattern, "*")) return true;
+
+        var i: usize = 0;
+        var it = mem.tokenize(pattern, "*");
+        var exact_begin = pattern.len > 0 and pattern[0] != '*';
+
+        while (it.next()) |substr| {
+            if (mem.indexOf(u8, str[i..], substr)) |j| {
+                if (exact_begin) {
+                    if (j != 0) return false;
+                    exact_begin = false;
+                }
+
+                i += j + substr.len;
+            } else return false;
+        }
+
+        return if (pattern[pattern.len - 1] == '*') true else i == str.len;
+    }
+
+    pub fn next(self: *Iterator) !?[]const u8 {
+        if (self.done) return null;
+
+        if (self.stack.items.len == 0) {
+            try self.stack.append(self.allocator, self.root.iterate());
+        }
+
+        var i = self.stack.items.len - 1;
+        reset: while (true) {
+            var it = &self.stack.items[i];
+            while (try it.next()) |entry| {
+                if (entry.kind != .File and entry.kind != .Directory)
+                    continue;
+
+                if (match(self.segments.items[i], entry.name)) switch (entry.kind) {
+                    .File => {
+                        if (self.path) |path| {
+                            self.allocator.free(path);
+                            self.path = null;
+                        }
+
+                        try self.components.append(self.allocator, entry.name);
+                        self.path = try std.fs.path.join(self.allocator, self.components.items);
+                        _ = self.components.pop();
+                        return self.path;
+                    },
+                    .Directory => {
+                        if (i < self.segments.items.len - 1) {
+                            const dir = try it.dir.openDir(entry.name, open_flags);
+                            try self.stack.append(self.allocator, dir.iterate());
+                            try self.components.append(self.allocator, entry.name);
+                            i += 1;
+
+                            continue :reset;
+                        }
+                    },
+                    else => unreachable,
+                };
+            }
+
+            if (i == 0) {
+                self.done = true;
+                return null;
+            }
+
+            i -= 1;
+            _ = self.components.pop();
+            self.stack.pop().dir.close();
+        }
     }
 };
 
@@ -31,7 +135,11 @@ pub fn copy(
     var it = try Iterator.init(allocator, from, pattern);
     defer it.deinit();
 
-    while (try it.next()) |subpath| try from.copyFile(subpath, to, subpath);
+    while (try it.next()) |subpath| {
+        if (std.fs.path.dirname(subpath)) |dirname|
+            try to.makePath(dirname);
+        try from.copyFile(subpath, to, subpath, .{});
+    }
 }
 
 test "no files" {
@@ -49,15 +157,8 @@ test "single file in dir" {
 test "glob all in root" {
     try copy_test(
         "*",
-        &[_][]const u8{
-            "something.zig",
-            "file",
-            "src/main.zig",
-        },
-        &[_][]const u8{
-            "something.zig",
-            "file",
-        },
+        &[_][]const u8{ "something.zig", "file", "src/main.zig" },
+        &[_][]const u8{ "something.zig", "file" },
     );
 }
 
@@ -111,9 +212,9 @@ test "glob files with extension in dir" {
 
 test "glob single file in multiple dirs" {
     try copy_test(
-        "*/main.zig",
-        &[_][]const u8{ "src/main.zig", "something/main.zig", "README.md", "src/a_file" },
-        &[_][]const u8{ "src/main.zig", "something/main.zig" },
+        "*/test.zig",
+        &[_][]const u8{ "src/test.zig", "something/test.zig", "README.md", "src/a_file" },
+        &[_][]const u8{ "src/test.zig", "something/test.zig" },
     );
 }
 
@@ -125,7 +226,7 @@ test "glob beginning and end of a file" {
     );
 }
 
-test "glob beginning and end of a file" {
+test "glob beginning and middle" {
     try copy_test(
         "*hello*file",
         &[_][]const u8{ "hellofile", "hello_world_file", "ahelloafile", "greeting_hellofile", "file" },
@@ -148,7 +249,7 @@ fn copy_test(pattern: []const u8, fs: []const []const u8, expected: []const []co
     var dst = std.testing.tmpDir(open_flags);
     defer dst.cleanup();
 
-    try copy(pattern, dir.dir, dst.dir);
+    try copy(std.testing.allocator, pattern, dir.dir, dst.dir);
     try expect_fs(dst.dir, expected);
 }
 
@@ -184,6 +285,9 @@ fn touch(root: std.fs.Dir, subpath: []const u8, kind: std.fs.File.Kind) !void {
     switch (kind) {
         .Directory => try root.makeDir(subpath),
         .File => {
+            if (std.fs.path.dirname(subpath)) |dirname|
+                try root.makePath(dirname);
+
             const file = try root.createFile(subpath, .{});
             file.close();
         },
