@@ -29,7 +29,7 @@ pub const Iterator = struct {
         };
         errdefer ret.deinit();
 
-        var it = mem.split(pattern, "/");
+        var it = mem.split(u8, pattern, "/");
         while (it.next()) |seg| {
             if (mem.indexOf(u8, seg, "**") != null)
                 return error.NotSupported;
@@ -57,7 +57,7 @@ pub const Iterator = struct {
         if (mem.eql(u8, pattern, "*")) return true;
 
         var i: usize = 0;
-        var it = mem.tokenize(pattern, "*");
+        var it = mem.tokenize(u8, pattern, "*");
         var exact_begin = pattern.len > 0 and pattern[0] != '*';
 
         while (it.next()) |substr| {
