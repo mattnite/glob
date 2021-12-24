@@ -7,7 +7,7 @@ const open_flags = .{
 };
 
 pub const Iterator = struct {
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
     root: std.fs.Dir,
     segments: std.ArrayListUnmanaged([]const u8),
     stack: std.ArrayListUnmanaged(std.fs.Dir.Iterator),
@@ -15,7 +15,7 @@ pub const Iterator = struct {
     path: ?[]const u8,
     done: bool,
 
-    pub fn init(allocator: *mem.Allocator, root: std.fs.Dir, pattern: []const u8) !Iterator {
+    pub fn init(allocator: mem.Allocator, root: std.fs.Dir, pattern: []const u8) !Iterator {
         if (pattern.len > 0 and pattern[0] == '/') return error.NoAbsolutePatterns;
 
         var ret = Iterator{
@@ -127,7 +127,7 @@ pub const Iterator = struct {
 };
 
 pub fn copy(
-    allocator: *mem.Allocator,
+    allocator: mem.Allocator,
     pattern: []const u8,
     from: std.fs.Dir,
     to: std.fs.Dir,
