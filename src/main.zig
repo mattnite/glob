@@ -277,7 +277,7 @@ fn setup_fs(files: []const []const u8) !std.testing.TmpIterableDir {
 }
 
 fn expect_fs(root: std.fs.Dir, expected: []const []const u8) !void {
-    for (expected) |subpath| try root.access(subpath, .{ .read = true });
+    for (expected) |subpath| try root.access(subpath, .{ .mode = .read_only });
 }
 
 fn touch(root: std.fs.Dir, subpath: []const u8, kind: std.fs.File.Kind) !void {
